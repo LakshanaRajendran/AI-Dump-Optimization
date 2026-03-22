@@ -3,9 +3,9 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
-from rl_optimizer import get_state
+from rl_optimizer import get_state, get_best_action
 from utils import efficiency_score, estimate_energy
-from rl_optimizer import get_best_action
+
 # Load models
 reg_model = joblib.load("reg_model.pkl")
 clf_model = joblib.load("clf_model.pkl")
@@ -25,29 +25,43 @@ vibration_rms = st.sidebar.slider("Vibration RMS", 0.5, 3.0, 1.5)
 vibration_peak = st.sidebar.slider("Vibration Peak", 1.0, 3.5, 2.0)
 initial_load = st.sidebar.slider("Initial Load", 800, 1500, 1000)
 
+# ✅ NEW INPUT (Actual measurement)
+residual_load = st.sidebar.slider("Residual Load After Dump", 0, 500, 100)
+
 # Feature engineering
 efficiency_ratio = max_angle / total_dump_time
 vibration_effectiveness = vibration_peak / hold_time
 dump_aggressiveness = vibration_rms * max_angle
 
-input_data = np.array([[
+input_data = np.array([[ 
     max_angle, hold_time, total_dump_time,
     vibration_rms, vibration_peak, initial_load,
     efficiency_ratio, vibration_effectiveness, dump_aggressiveness
 ]])
 
-# Prediction
-leftover = reg_model.predict(input_data)[0]
-state = get_state(leftover)
+# -------------------------
+# Predictions
+# -------------------------
+predicted_leftover = reg_model.predict(input_data)[0]
 
-action = get_best_action(leftover)
+# ✅ ACTUAL FORMULA
+actual_leftover = (residual_load / initial_load) * 100
+
+# Use ACTUAL for RL (smart system)
+action = get_best_action(actual_leftover)
+
 severity = le.inverse_transform(clf_model.predict(input_data))[0]
 
+# Confidence
 tree_preds = [tree.predict(input_data)[0] for tree in reg_model.estimators_]
 confidence = 100 - np.std(tree_preds)
 
-eff_score = efficiency_score(leftover)
+# Metrics
+eff_score = efficiency_score(predicted_leftover)
 energy = estimate_energy(max_angle, hold_time, vibration_rms)
+
+# Error
+error = abs(actual_leftover - predicted_leftover)
 
 # Tabs
 tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📈 Analytics", "🧪 Simulation"])
@@ -58,17 +72,26 @@ with tab1:
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Leftover %", f"{leftover:.2f}%")
-    col2.metric("Efficiency Score", f"{eff_score:.2f}")
+    col1.metric("Predicted Leftover %", f"{predicted_leftover:.2f}%")
+    col2.metric("Actual Leftover %", f"{actual_leftover:.2f}%")
     col3.metric("Confidence", f"{confidence:.2f}%")
 
     st.write(f"**Severity Level:** {severity}")
     st.write(f"**Estimated Energy Usage:** {energy:.2f}")
+    st.write(f"📉 Prediction Error: {error:.2f}%")
 
-    # Gauge Chart (VERY COOL)
+    # Accuracy feedback
+    if error < 2:
+        st.success("✅ High Accuracy")
+    elif error < 5:
+        st.warning("⚠️ Moderate Accuracy")
+    else:
+        st.error("❌ Needs Improvement")
+
+    # Pie chart
     fig = px.pie(
         names=["Dumped", "Leftover"],
-        values=[100-leftover, leftover],
+        values=[100 - predicted_leftover, predicted_leftover],
         title="Material Distribution"
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -77,7 +100,6 @@ with tab1:
 with tab2:
     st.subheader("📈 Dump Behavior Analysis")
 
-    # Generate angle vs leftover data
     angles = np.linspace(40, 60, 20)
     leftovers = []
 
@@ -93,16 +115,19 @@ with tab2:
         "Predicted Leftover": leftovers
     })
 
-    # Line graph
     fig1 = px.line(df_graph, x="Angle", y="Predicted Leftover",
-                   title="Angle vs Leftover Projection",
-                   markers=True)
+                   title="Angle vs Leftover Projection", markers=True)
     st.plotly_chart(fig1, use_container_width=True)
 
-    # Bar chart
-    fig2 = px.bar(df_graph, x="Angle", y="Predicted Leftover",
-                  title="Dump Efficiency Trend")
-    st.plotly_chart(fig2, use_container_width=True)
+    # ✅ Actual vs Predicted
+    compare_df = pd.DataFrame({
+        "Type": ["Predicted", "Actual"],
+        "Leftover %": [predicted_leftover, actual_leftover]
+    })
+
+    fig_compare = px.bar(compare_df, x="Type", y="Leftover %",
+                        title="Actual vs Predicted Comparison")
+    st.plotly_chart(fig_compare, use_container_width=True)
 
 # ---------------- TAB 3 ----------------
 with tab3:
@@ -118,7 +143,7 @@ with tab3:
         vib_sim = st.slider("Sim Vibration", 0.5, 3.0, 1.5, key="sim3")
         time_sim = st.slider("Sim Time", 5, 15, 8, key="sim4")
 
-    sim_input = np.array([[
+    sim_input = np.array([[ 
         angle_sim, hold_sim, time_sim,
         vib_sim, vibration_peak, initial_load,
         angle_sim/time_sim, vibration_peak/hold_sim, vib_sim*angle_sim
@@ -128,22 +153,24 @@ with tab3:
 
     st.success(f"Predicted Leftover: {sim_leftover:.2f}%")
 
-st.subheader("🤖 AI Optimization Suggestion")
-if action == "increase_angle":
-    msg = "Increase angle by 3°"
-elif action == "increase_hold":
-    msg = "Increase hold time by 2 sec"
-else:
-    msg = "Enable vibration assist"
+    # RL Suggestion
+    st.subheader("🤖 AI Optimization Suggestion")
 
-st.success(msg)
+    if action == "increase_angle":
+        msg = "Increase angle by 3°"
+    elif action == "increase_hold":
+        msg = "Increase hold time by 2 sec"
+    else:
+        msg = "Enable vibration assist"
 
-# Comparison chart
-compare_df = pd.DataFrame({
-    "Scenario": ["Current", "Simulated"],
-    "Leftover": [leftover, sim_leftover]
-})
+    st.success(msg)
 
-fig3 = px.bar(compare_df, x="Scenario", y="Leftover",
-                title="Current vs Simulated Comparison")
-st.plotly_chart(fig3, use_container_width=True)
+    # Comparison chart
+    compare_df2 = pd.DataFrame({
+        "Scenario": ["Current", "Simulated"],
+        "Leftover": [predicted_leftover, sim_leftover]
+    })
+
+    fig3 = px.bar(compare_df2, x="Scenario", y="Leftover",
+                  title="Current vs Simulated Comparison")
+    st.plotly_chart(fig3, use_container_width=True)
